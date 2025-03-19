@@ -7,11 +7,18 @@ import ffmpeg
 import whisper
 from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
-from typing import TypedDict, List
+from typing import TypedDict, List, Any
 import mimetypes
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+
+# Add these imports at the top
+from langchain_community.vectorstores import FAISS
+from langchain_openai import OpenAIEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.docstore.document import Document
 
 # Load environment variables
 load_dotenv()
@@ -19,6 +26,9 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # Initialize OpenAI GPT Model
 llm = ChatOpenAI(model="gpt-3.5-turbo", temperature=0.7, openai_api_key=OPENAI_API_KEY)
+
+# Add this after initializing OpenAI
+embeddings = OpenAIEmbeddings(openai_api_key=OPENAI_API_KEY)
 
 # Define Preloaded Documents Directory
 PRELOADED_DOCS_FOLDER = "files"
@@ -28,10 +38,15 @@ PRELOADED_DOCS_FOLDER = "files"
 class TutorState(TypedDict):
     extracted_content: str
     chat_history: List[str]
+    vectorstore: Any
 
 
 # Global state variable; in a real app, use per-user sessions
-tutor_state: TutorState = {"extracted_content": "", "chat_history": []}
+tutor_state: TutorState = {
+    "extracted_content": "", 
+    "chat_history": [],
+    "vectorstore": None
+}
 
 # ---------------- Processing Functions ----------------
 
@@ -86,7 +101,7 @@ def transcribe_videos():
                 audio_path, format="wav", acodec="pcm_s16le", ac=1, ar="16k"
             ).run(overwrite_output=True)
             model = whisper.load_model("base", device="cpu")
-            result = model.transcribe(audio_path, fp16=True)
+            result = model.transcribe(audio_path, fp16=False)
             all_text += f"\n\n--- Video: {video_file} ---\n{result['text']}"
         except Exception as e:
             print(f"❌ Error processing {video_file}: {str(e)}")
@@ -107,30 +122,65 @@ def extract_text_from_txt():
     return all_text.strip()
 
 
+def create_vectorstore(text: str) -> FAISS:
+    """
+    Creates a FAISS vector store from the input text
+    """
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=1000,
+        chunk_overlap=200,
+        length_function=len
+    )
+    
+    # Split text into chunks
+    texts = text_splitter.split_text(text)
+
+    # # Print the number of chunks
+    # print(f"Number of chunks: {len(texts)}")
+
+    # # Print each chunk individually
+    # for i, chunk in enumerate(texts):
+    #     print(f"Chunk {i + 1}:")
+    #     print(chunk)
+    #     print("-" * 40)  # Separator line for easier reading
+    
+    # Create documents
+    documents = [Document(page_content=t) for t in texts]
+    
+    # Create and return the vector store
+    return FAISS.from_documents(documents, embeddings)
+
 # ---------------- AI Tutor Function ----------------
 
 
 def answer_question(state: TutorState, user_question: str) -> str:
     """
-    Uses GPT to answer questions based on extracted content.
-    Limits chat history to the last 5 interactions and trims study material if needed.
+    Uses GPT to answer questions based on vectorized content.
     """
-    # Keep only the last 5 chat interactions
     state["chat_history"] = state["chat_history"][-5:]
-    # Ensure extracted content is not too long
-    text = state.get("extracted_content", "")
-    if len(text.split()) > 10000:
-        text = " ".join(text.split()[:10000])
+    
+    if state["vectorstore"] is None:
+        return "No study materials have been loaded and vectorized."
+    
+    # Search for relevant documents
+    relevant_docs = state["vectorstore"].similarity_search(
+        user_question,
+        k=3  # Get top 3 most relevant chunks
+    )
+    
+    # Combine relevant texts
+    context = "\n\n".join([doc.page_content for doc in relevant_docs])
+    
     chat_context = " \n ".join(state["chat_history"])
+    
     prompt = f"""
 You are an AI Tutor for school students. You must **only** answer based on the provided study materials.
 
 - If the question is related to the content, provide a detailed, educational answer.
 - If the question is not found in the study materials, respond with:
-  \"I'm sorry, but I can only answer questions based on the provided study material. Please ask something related to the content.\"
-
-**Study Material (limited to 8000 characters):**
-{text[:8000]}
+  "I'm sorry, but I can only answer questions based on the provided study material. Please ask something related to the content."
+**Study Material:**
+{context}
 
 **Previous Conversation:**
 {chat_context}
@@ -138,14 +188,26 @@ You are an AI Tutor for school students. You must **only** answer based on the p
 **Student's Question:**
 {user_question}
 """
+    
     response = llm.invoke(prompt)
     state["chat_history"].append(f"User: {user_question}\nAI: {response.content}")
     return response.content
 
 
+
 # ---------------- FastAPI Application ----------------
 
 app = FastAPI()
+
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Change this to specific domains in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 # Pydantic models for request and response
@@ -173,12 +235,23 @@ def load_study_materials():
             extract_text_from_txt(),
         ]
     ).strip()
+    
     if not extracted_text:
         print("❌ No study materials found in folder 'files'.")
+    else:
+        # Create vector store
+        tutor_state["vectorstore"] = create_vectorstore(extracted_text)
+        
     tutor_state["extracted_content"] = extracted_text
-    tutor_state["chat_history"] = []  # Reset chat history on startup
-    print("✅ Study materials loaded.")
-    print(extracted_text)
+    tutor_state["chat_history"] = []
+    print("✅ Study materials loaded and vectorized.")
+    # print(extracted_text)
+
+
+@app.get("/")
+def read_root():
+    return {"message": "API is running!"}
+
 
 @app.post("/ask", response_model=AnswerResponse)
 def ask_question_endpoint(request: QuestionRequest):
