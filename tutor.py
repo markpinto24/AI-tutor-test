@@ -138,11 +138,11 @@ def create_vectorstore(text: str) -> FAISS:
     # # Print the number of chunks
     # print(f"Number of chunks: {len(texts)}")
 
-    # # Print each chunk individually
-    # for i, chunk in enumerate(texts):
-    #     print(f"Chunk {i + 1}:")
-    #     print(chunk)
-    #     print("-" * 40)  # Separator line for easier reading
+    # Print each chunk individually
+    for i, chunk in enumerate(texts):
+        print(f"Chunk {i + 1}:")
+        print(chunk)
+        print("-" * 40)  # Separator line for easier reading
     
     # Create documents
     documents = [Document(page_content=t) for t in texts]
@@ -180,6 +180,7 @@ You are an AI Tutor for school students. You must **only** answer based on the p
 - If the question is not found in the study materials, respond with:
   "I'm sorry, but I can only answer questions based on the provided study material. Please ask something related to the content."
 **Study Material:**
+- If the question is not found in the study materials, but is related or connected to the content, you can still answer it.
 {context}
 
 **Previous Conversation:**
