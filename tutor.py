@@ -138,14 +138,23 @@ def create_vectorstore(text: str) -> FAISS:
     # # Print the number of chunks
     # print(f"Number of chunks: {len(texts)}")
 
-    # Print each chunk individually
-    for i, chunk in enumerate(texts):
-        print(f"Chunk {i + 1}:")
-        print(chunk)
-        print("-" * 40)  # Separator line for easier reading
+    # # Print each chunk individually
+    # for i, chunk in enumerate(texts):
+    #     print(f"Chunk {i + 1}:")
+    #     print(chunk)
+    #     print("-" * 40)  # Separator line for easier reading
     
     # Create documents
     documents = [Document(page_content=t) for t in texts]
+
+    # Print the number of documents
+    # print(f"Number of documents: {len(documents)}")
+
+    # # Print each document individually
+    # for i, doc in enumerate(documents):
+    #     print(f"Document {i + 1}:")
+    #     print(doc)
+    #     print("-" * 40)  # Separator line for easier reading
     
     # Create and return the vector store
     return FAISS.from_documents(documents, embeddings)
